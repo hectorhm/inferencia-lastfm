@@ -1,6 +1,6 @@
 ---
 title: "Implementando ICs"
-author: "Nazareno"
+author: "Hector Medeiros"
 output:
   html_document:
     theme: readable
@@ -16,10 +16,11 @@ output:
 ```{r setup, include=FALSE, message=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
+library(boot)
 theme_set(theme_bw())
 ```
 
-## Os dados
+## Dados
 
 ```{r}
 set.seed(12345)
@@ -39,7 +40,229 @@ glimpse(lastfm)
 
 Utilizaremos ICs para estimar duas métricas sobre os usuários do LastFM em geral durante um período de 6 meses. Em ambos os casos faremos isso a partir de uma amostra de 300 usuários. As duas métricas são: 
 
-1. Qual a proporção de novos artistas em geral escutada por usuários?
-2. Para os usuários que gostam de música muito pop (mediana_pop > 5), qual a correlação entre a popularidade mediana dos artistas escutado e a proporção dos artistas escutados que eram novos. 
 
-Crie intervalos com 95% de confiança.
+
+Crie intervaloos com 95% de confiança.
+
+
+### 1. Qual a proporção de novos artistas em geral escutada por usuários?
+
+Primeiro, se é gerado a estatística que será analisada
+
+```{r}
+# Gerando estatística
+
+lastfm = lastfm %>% 
+  mutate(prop_new = (news / (news + old)) * 100)
+
+lastfm
+```
+
+#### Bootstrap
+
+Calculando o \hat{\theta} da amostra
+
+```{r}
+theta_p = function(df) {
+  df %>%
+    pull(prop_new) %>%
+    mean()
+}
+
+theta_c = theta_p(lastfm)
+
+theta_c
+```
+
+Criando bootstrap e encontrando o \hat{\theta} para cada reamostra
+
+```{r}
+rep = 3000
+
+q1_bootstrap <- function(x){
+  prop_new = x %>% pull(prop_new)
+  boot_x <- sample(prop_new,
+                   size = NROW(prop_new),
+                   replace = TRUE)
+  return(mean(boot_x))
+}
+
+set.seed(1)
+
+reamostragens = tibble(i = 1:rep) %>% 
+  mutate(theta_c_s = map_dbl(i, ~ q1_bootstrap(lastfm)))
+
+reamostragens
+```
+
+Plotando histogramas com \hat{\theta}
+
+```{r}
+reamostragens %>%
+  ggplot(aes(x = theta_c_s)) +
+  geom_histogram(colour = "darkorange",
+                 fill = "white")
+
+reamostragens %>%
+  ggplot(aes(x = theta_c_s - theta_c)) +
+  geom_histogram(colour = "darkblue",
+                 fill = "white")
+```
+
+Calculando os erros amostrais
+
+```{r}
+intervalo = reamostragens %>% 
+  mutate(error = theta_c_s - theta_c) %>% 
+  summarise(inf_error = quantile(error, .05), 
+            sup_error = quantile(error, .95),
+            inf_value = theta_c + inf_error, 
+            sup_value = theta_c + sup_error)
+
+intervalo
+
+```
+
+```{r}
+  ggplot() +
+  geom_rect(data = intervalo, aes(xmin = inf_value, xmax = sup_value), ymin = -Inf, ymax = Inf, fill = "gold")+
+  geom_histogram(data = reamostragens, aes(theta_c_s), binwidth = .002, fill = "white", colour = "darkgrey") +
+   geom_vline(xintercept = theta_c, color = "blue", size = .5) +
+```
+
+`
+```{r}
+ggplot() +
+  geom_rect(data = intervalo, aes(xmin = inf_value, xmax = sup_value), ymin = -Inf, ymax = Inf, fill = "gold", alpha = .25) +
+  geom_histogram(data = reamostragens, aes(theta_c_s), binwidth = .002, fill = "white", colour = "darkgrey") +
+  geom_vline(xintercept = theta_c, color = "blue", size = .5) +
+  geom_vline(xintercept = theta, color = "darkgreen", size = .5) +
+  labs(title = expression("intervaloo estimado via bootstrap manual"))
+```
+
+
+Abaixo é realizado o bootstrap usando a biblioteca 'boot'.
+
+```{r}
+set.seed(1)
+
+func_theta_prop = function(df, i) {
+    df %>%
+        slice(i) %>%
+        pull(prop_new) %>%
+        mean()
+}
+
+booted <- boot(data = lastfm,
+               statistic = func_theta_prop,
+               R = 4000)
+
+intervalo_calc <- boot.ci(booted, conf=.95, type="bca")
+
+intervalo_calc
+```
+
+### 2. Para os usuários que gostam de música muito pop (mediana_pop > 5), qual a correlação entre a popularidade mediana dos artistas escutado e a proporção dos artistas escutados que eram novos. 
+
+
+Primeiro, se é gerado a estatística que será analisada e se é criado as funções que irão auxiliar a realização do bootstrap
+
+```{r}
+
+set.seed(1)
+
+# Gerando estatística
+
+lastfm <- lastfm %>%
+    filter(mediana_pop > 5)
+
+correlation_med_prop = function(df) {
+  cor(df$mediana_pop, df$prop_new, method = "spearman")
+}
+
+bootstrap_cor = function(df){
+  boot <- sample_n(df,
+                   size = NROW(df),
+                   replace = TRUE)
+  return(cor(boot$mediana_pop, boot$prop_new, method = "spearman"))
+}
+
+lastfm
+```
+
+#### Bootstrap
+
+Aqui se é calculado o \hat{\theta} para a amostra
+
+```{r}
+set.seed(1)
+
+stat_cor = correlation_med_prop(lastfm)
+
+stat_cor
+```
+
+No bloco de código abaixo é realizado o bootstrap e achado o \hat{\theta} para cada re-amostra
+
+```{r}
+rep = 4000
+
+reamostragens_cor = tibble(i = 1:rep) %>% 
+  mutate(theta_c_s = map_dbl(i, ~ bootstrap_cor(lastfm)))
+
+reamostragens_cor
+```
+
+Os gráficos abaixo monstram informações sobre o \hat{\theta} de cada re-amostra
+
+```{r}
+reamostragens_cor %>%
+  ggplot(aes(x = theta_c_s)) +
+  geom_histogram(colour = "darkorange",
+                 fill = "white")
+
+reamostragens_cor %>%
+  ggplot(aes(x = theta_c_s - stat_cor)) +
+  geom_histogram(colour = "darkblue",
+                 fill = "white")
+```
+
+```{r}
+intervalo = reamostragens_cor %>% 
+  mutate(error = theta_c_s - stat_cor) %>% 
+  summarise(inf_error = quantile(error, .025), 
+            sup_error = quantile(error, .975))
+
+intervalo
+```
+
+```{r}
+intervalo = intervalo %>% 
+  mutate(inf_value = stat_cor + inf_error, 
+         sup_value = stat_cor + sup_error)
+
+intervalo
+```
+
+```{r}
+set.seed(1)
+
+funcao_theta_cor_index = function(df,i) {
+  df <- df %>%
+    slice(i) 
+  
+  cor(df$mediana_pop, df$prop_new, method = "spearman")
+}
+
+booted <- boot(data = lastfm, 
+               statistic = funcao_theta_cor_index, 
+               R = 4000)
+
+ci_cor = boot.ci(booted, 
+          conf = .95,
+          type = "bca")
+ci_cor
+```
+
+
+`
